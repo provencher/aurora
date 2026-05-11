@@ -3,6 +3,7 @@ add_library(aurora_core STATIC
         lib/input.cpp
         lib/window.cpp
         lib/logging.cpp
+        lib/xr/xr.cpp
 )
 add_library(aurora::core ALIAS aurora_core)
 set_target_properties(aurora_core PROPERTIES FOLDER "aurora")
@@ -14,6 +15,12 @@ target_link_libraries(aurora_core PRIVATE absl::btree absl::flat_hash_map sqlite
 if (AURORA_ENABLE_GX AND AURORA_CACHE_USE_ZSTD)
     target_compile_definitions(aurora_core PRIVATE AURORA_CACHE_USE_ZSTD)
     target_link_libraries(aurora_core PRIVATE libzstd_static)
+endif ()
+
+if (AURORA_OPENXR_LOADER_TARGET)
+    target_compile_definitions(aurora_core PRIVATE AURORA_HAS_OPENXR)
+    target_sources(aurora_core PRIVATE lib/xr/openxr_probe.cpp)
+    target_link_libraries(aurora_core PRIVATE ${AURORA_OPENXR_LOADER_TARGET})
 endif ()
 
 if (AURORA_ENABLE_GX)

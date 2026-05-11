@@ -15,6 +15,7 @@
 #include "input.hpp"
 #include "internal.hpp"
 #include "window.hpp"
+#include "xr/xr.hpp"
 
 #include <SDL3/SDL_filesystem.h>
 #include <magic_enum.hpp>
@@ -98,25 +99,38 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   /* Attempt to create a window using the calling application's desired backend */
   AuroraBackend selectedBackend = config.desiredBackend;
   bool windowCreated = false;
-  if (selectedBackend != BACKEND_AUTO && window::create_window(selectedBackend)) {
+  const auto tryBackend = [&](AuroraBackend backend) {
+    selectedBackend = backend;
+    if (!window::create_window(selectedBackend)) {
+      return false;
+    }
     if (webgpu::initialize(selectedBackend)) {
-      windowCreated = true;
-    } else {
-      window::destroy_window();
+      return true;
+    }
+    window::destroy_window();
+    return false;
+  };
+
+  if (g_config.enableOpenXR && selectedBackend == BACKEND_AUTO) {
+    windowCreated = tryBackend(BACKEND_VULKAN);
+    if (!windowCreated && g_config.requireOpenXR) {
+      ASSERT(false, "OpenXR requires Vulkan, but Vulkan backend initialization failed");
+    }
+  } else if (selectedBackend != BACKEND_AUTO) {
+    windowCreated = tryBackend(selectedBackend);
+    if (!windowCreated && g_config.enableOpenXR && g_config.requireOpenXR && selectedBackend == BACKEND_VULKAN) {
+      ASSERT(false, "OpenXR requires Vulkan, but Vulkan backend initialization failed");
     }
   }
 
   if (!windowCreated) {
     for (const auto backendType : PreferredBackendOrder) {
-      selectedBackend = backendType;
-      if (!window::create_window(selectedBackend)) {
+      if (backendType == selectedBackend) {
         continue;
       }
-      if (webgpu::initialize(selectedBackend)) {
+      if (tryBackend(backendType)) {
         windowCreated = true;
         break;
-      } else {
-        window::destroy_window();
       }
     }
   }
@@ -132,6 +146,11 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   ASSERT(window::create_window(BACKEND_NULL), "Error creating window: {}", SDL_GetError());
   ASSERT(window::create_renderer(), "Failed to initialize SDL renderer: {}", SDL_GetError());
 #endif
+
+  xr::initialize(g_config, selectedBackend);
+  if (g_config.requireOpenXR && !xr::is_active()) {
+    ASSERT(false, "Required OpenXR initialization failed: {}", xr::status_message());
+  }
 
   window::show_window();
 
@@ -171,6 +190,7 @@ void shutdown() noexcept {
 #ifdef AURORA_ENABLE_RMLUI
   rmlui::shutdown();
 #endif
+  xr::shutdown();
 #ifdef AURORA_ENABLE_GX
   g_currentView = {};
   imgui::shutdown();
@@ -192,6 +212,7 @@ const AuroraEvent* update() noexcept {
 
 bool begin_frame() noexcept {
   ZoneScoped;
+  xr::on_aurora_frame_start();
 #ifdef AURORA_ENABLE_GX
   {
     window::SurfaceLock surfaceLock;
@@ -241,6 +262,7 @@ bool begin_frame() noexcept {
     return false;
   }
 #endif
+  xr::begin_frame();
   return true;
 }
 
@@ -319,6 +341,7 @@ void end_frame() noexcept {
     const auto buffer = encoder.Finish(&cmdBufDescriptor);
     g_queue.Submit(1, &buffer);
     gfx::after_submit();
+    xr::end_frame_after_submit();
     if (window::is_presentable() && g_surface) {
       auto presentStatus = g_surface.Present();
       if (presentStatus != wgpu::Status::Success) {

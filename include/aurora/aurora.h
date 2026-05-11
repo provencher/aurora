@@ -109,7 +109,77 @@ typedef struct {
    * This can be set to 0 to disable allocating this region.
    */
   uint32_t mem2Size;
+
+  /*
+   * Request OpenXR lifecycle support. Desktop OpenXR launch currently requires the Vulkan backend.
+   */
+  bool enableOpenXR;
+
+  /*
+   * If true, aurora_initialize() fails when requested OpenXR support cannot become active.
+   */
+  bool requireOpenXR;
 } AuroraConfig;
+
+/**
+ * Aurora's OpenXR availability/lifecycle state. The XR API is present in every build;
+ * SDK/runtime-dependent builds report unavailable or blocked instead of omitting symbols.
+ */
+typedef enum {
+  AURORA_XR_DISABLED,
+  AURORA_XR_UNAVAILABLE,
+  AURORA_XR_BLOCKED,
+  AURORA_XR_READY,
+  AURORA_XR_ACTIVE,
+  AURORA_XR_LOST,
+} AuroraXRStatus;
+
+typedef struct {
+  float x;
+  float y;
+  float z;
+} AuroraXRVector3f;
+
+typedef struct {
+  float x;
+  float y;
+  float z;
+  float w;
+} AuroraXRQuaternionf;
+
+typedef struct {
+  AuroraXRQuaternionf orientation;
+  AuroraXRVector3f position;
+} AuroraXRPose;
+
+typedef struct {
+  float angleLeft;
+  float angleRight;
+  float angleUp;
+  float angleDown;
+} AuroraXRFov;
+
+typedef struct {
+  bool orientationValid;
+  bool positionValid;
+  bool orientationTracked;
+  bool positionTracked;
+  bool fovValid;
+  AuroraXRPose pose;
+  AuroraXRFov fov;
+  uint32_t recommendedWidth;
+  uint32_t recommendedHeight;
+  uint32_t recommendedSampleCount;
+} AuroraXRView;
+
+typedef struct {
+  AuroraXRStatus status;
+  bool requested;
+  bool active;
+  bool shouldRender;
+  uint32_t viewCount;
+  uint64_t frameIndex;
+} AuroraXRFrameState;
 
 typedef struct {
   AuroraBackend backend;
@@ -130,6 +200,19 @@ void aurora_set_background_input(bool value);
 
 AuroraBackend aurora_get_backend();
 const AuroraBackend* aurora_get_available_backends(size_t* count);
+
+AuroraXRStatus aurora_xr_get_status();
+const char* aurora_xr_get_status_message();
+bool aurora_xr_is_requested();
+bool aurora_xr_is_active();
+bool aurora_xr_should_render();
+AuroraXRFrameState aurora_xr_get_frame_state();
+uint32_t aurora_xr_get_view_count();
+bool aurora_xr_get_view(uint32_t index, AuroraXRView* outView);
+bool aurora_xr_begin_eye(uint32_t eyeIndex);
+void aurora_xr_end_eye();
+bool aurora_xr_begin_flat_ui();
+void aurora_xr_end_flat_ui();
 
 #ifdef __cplusplus
 }

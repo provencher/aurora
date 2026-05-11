@@ -11,6 +11,7 @@ option(AURORA_ENABLE_GX "Enable GX implementation and WebGPU renderer" ON)
 option(AURORA_ENABLE_DVD "Enable DVD implementation backed by nod" OFF)  # TODO: need to fix tests
 option(AURORA_ENABLE_CARD "Enable CARD implementation based on kabufuda" ON)
 option(AURORA_ENABLE_RMLUI "Enable HTML/CSS Based UI Library for use in end-user UI development." OFF)
+option(AURORA_ENABLE_OPENXR "Enable optional OpenXR SDK/runtime probing" OFF)
 option(AURORA_CACHE_USE_ZSTD "Compress WebGPU cache entries with zstd" ON)
 
 # Dependency versions
@@ -54,6 +55,18 @@ set(AURORA_NOD_LINKAGE "${_default_linkage}" CACHE STRING "nod linkage type pref
 set_property(CACHE AURORA_NOD_LINKAGE PROPERTY STRINGS shared static)
 
 add_subdirectory(extern)
+
+set(AURORA_OPENXR_LOADER_TARGET "")
+if (AURORA_ENABLE_OPENXR)
+  find_package(OpenXR CONFIG QUIET)
+  if (TARGET OpenXR::openxr_loader)
+    set(AURORA_OPENXR_LOADER_TARGET OpenXR::openxr_loader)
+  elseif (TARGET openxr_loader)
+    set(AURORA_OPENXR_LOADER_TARGET openxr_loader)
+  else ()
+    message(WARNING "aurora: AURORA_ENABLE_OPENXR=ON, but no OpenXR loader target was found; building XR API stubs")
+  endif ()
+endif ()
 
 include(cmake/aurora_core.cmake)
 include(cmake/aurora_os.cmake)
