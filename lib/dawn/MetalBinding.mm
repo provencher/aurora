@@ -8,13 +8,13 @@
 @end
 @interface MTLLogState : NSObject
 @end
-#endif
 
 @implementation MTLLogStateDescriptor
 @end
 
 @implementation MTLLogState
 @end
+#endif
 
 #include <SDL3/SDL_metal.h>
 
