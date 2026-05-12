@@ -22,6 +22,8 @@
 
 #include "tracy/Tracy.hpp"
 
+#include <imgui.h>
+
 namespace aurora {
 AuroraConfig g_config;
 uint32_t g_sdlCustomEventsStart;
@@ -35,6 +37,20 @@ Module Log("aurora");
 using webgpu::g_device;
 using webgpu::g_queue;
 using webgpu::g_surface;
+
+void draw_xr_sbs_debug_overlay(const std::array<xr::SbsMirrorEye, 2>& eyes) noexcept {
+  ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowBgAlpha(0.65f);
+  ImGui::SetNextWindowPos(ImVec2{8.0f, 8.0f}, ImGuiCond_Always);
+  constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
+  if (ImGui::Begin("XR SBS Preview Stats", nullptr, flags)) {
+    ImGui::Text("XR SBS %.1f FPS", io.Framerate);
+    ImGui::Text("%ux%u per eye", eyes[0].width, eyes[0].height);
+  }
+  ImGui::End();
+}
 #endif
 
 #ifdef AURORA_ENABLE_GX
@@ -341,6 +357,9 @@ void end_frame() noexcept {
         pass.End();
       }
       {
+        if (useXrSbsMirror) {
+          draw_xr_sbs_debug_overlay(sbsMirrorEyes);
+        }
         const std::array attachments{
             wgpu::RenderPassColorAttachment{
                 .view = g_currentView,

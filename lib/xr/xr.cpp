@@ -47,6 +47,7 @@ struct State {
   bool eyeActive = false;
   uint32_t activeEyeIndex = std::numeric_limits<uint32_t>::max();
   bool flatUiActive = false;
+  bool sbsMirrorEnabled = false;
 };
 
 State g_state;
@@ -63,6 +64,7 @@ struct EyeSwapchainImage {
   XrSwapchainImageVulkanKHR xrImage{XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR};
   wgpu::Texture texture;
   wgpu::TextureView view;
+  wgpu::BindGroup sbsMirrorBindGroup;
 };
 
 struct EyeSwapchain {
@@ -162,6 +164,14 @@ bool dawn_vulkan_handles_ready(const dawn::native::vulkan::VulkanDeviceHandles& 
   return handles.instance != VK_NULL_HANDLE && handles.physicalDevice != VK_NULL_HANDLE &&
          handles.device != VK_NULL_HANDLE && handles.queue != VK_NULL_HANDLE &&
          handles.queueFamilyIndex != std::numeric_limits<uint32_t>::max();
+}
+
+bool env_flag_enabled(const char* name) noexcept {
+  if (const char* value = std::getenv(name); value != nullptr) {
+    return value[0] != '\0' && std::strcmp(value, "0") != 0 && std::strcmp(value, "FALSE") != 0 &&
+           std::strcmp(value, "false") != 0;
+  }
+  return false;
 }
 
 int64_t preferred_vk_format() noexcept {
@@ -575,6 +585,7 @@ void end_runtime_frame_after_submit() noexcept {
       eye.acquired = false;
       eye.acquiredImageIndex = std::numeric_limits<uint32_t>::max();
       if (acquiredImageIndex < eye.images.size()) {
+        eye.images[acquiredImageIndex].sbsMirrorBindGroup = {};
         eye.images[acquiredImageIndex].view = {};
         eye.images[acquiredImageIndex].texture = {};
       }
@@ -647,6 +658,7 @@ void initialize(const AuroraConfig& config, AuroraBackend selectedBackend) noexc
   g_state = {};
   g_state.requested = config.enableOpenXR;
   g_state.required = config.requireOpenXR;
+  g_state.sbsMirrorEnabled = env_flag_enabled("AURORA_XR_MIRROR_SBS");
   g_state.frameState.requested = g_state.requested;
 
   if (!g_state.requested) {
@@ -773,11 +785,7 @@ bool get_view(uint32_t index, AuroraXRView* outView) noexcept {
 }
 
 bool sbs_mirror_enabled() noexcept {
-  if (const char* value = std::getenv("AURORA_XR_MIRROR_SBS"); value != nullptr) {
-    return value[0] != '\0' && std::strcmp(value, "0") != 0 && std::strcmp(value, "FALSE") != 0 &&
-           std::strcmp(value, "false") != 0;
-  }
-  return false;
+  return g_state.sbsMirrorEnabled;
 }
 
 bool get_sbs_mirror_eyes(std::array<SbsMirrorEye, 2>& outEyes) noexcept {
@@ -794,15 +802,11 @@ bool get_sbs_mirror_eyes(std::array<SbsMirrorEye, 2>& outEyes) noexcept {
     if (image.texture == nullptr || image.view == nullptr) {
       return false;
     }
-    const webgpu::TextureWithSampler source{
-        .texture = image.texture,
-        .view = image.view,
-        .size = {.width = eye.width, .height = eye.height, .depthOrArrayLayers = 1},
-        .format = wgpu_format_from_vk_format(g_runtime.colorFormat),
-        .sampler = webgpu::g_frameBuffer.sampler,
-    };
+    if (image.sbsMirrorBindGroup == nullptr) {
+      return false;
+    }
     outEyes[i] = {
-        .bindGroup = webgpu::create_copy_bind_group(source),
+        .bindGroup = image.sbsMirrorBindGroup,
         .width = eye.width,
         .height = eye.height,
     };
@@ -864,6 +868,16 @@ bool begin_eye(uint32_t eyeIndex) noexcept {
     return false;
   }
   image.view = image.texture.CreateView();
+  if (sbs_mirror_enabled()) {
+    const webgpu::TextureWithSampler source{
+        .texture = image.texture,
+        .view = image.view,
+        .size = {.width = eye.width, .height = eye.height, .depthOrArrayLayers = 1},
+        .format = wgpuFormat,
+        .sampler = webgpu::g_frameBuffer.sampler,
+    };
+    image.sbsMirrorBindGroup = webgpu::create_copy_bind_group(source);
+  }
 
   const gfx::EfbRenderTargets targets{
       .colorView = image.view,
@@ -877,6 +891,7 @@ bool begin_eye(uint32_t eyeIndex) noexcept {
   if (!gfx::set_efb_render_targets(targets, true)) {
     XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(eye.swapchain, &releaseInfo);
+    image.sbsMirrorBindGroup = {};
     image.view = {};
     image.texture = {};
     eye.acquired = false;
