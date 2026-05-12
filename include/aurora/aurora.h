@@ -119,6 +119,12 @@ typedef struct {
    * If true, aurora_initialize() fails when requested OpenXR support cannot initialize to ready or active.
    */
   bool requireOpenXR;
+
+  /*
+   * Optional per-eye OpenXR swapchain dimensions. Set either value to 0 to use the runtime recommendation.
+   */
+  uint32_t openXREyeWidth;
+  uint32_t openXREyeHeight;
 } AuroraConfig;
 
 /**

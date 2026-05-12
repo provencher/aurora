@@ -21,6 +21,7 @@
 #include "../webgpu/dawn_vulkan_interop.hpp"
 #endif
 
+#include "../internal.hpp"
 #include "../logging.hpp"
 
 #include <algorithm>
@@ -56,6 +57,7 @@ void set_status(AuroraXRStatus status, std::string message) noexcept;
 constexpr const char* VulkanEnable2Extension = "XR_KHR_vulkan_enable2";
 constexpr XrVersion RequestedOpenXRApiVersion = XR_MAKE_VERSION(1, 0, 0);
 constexpr uint32_t XrSwapchainSampleCount = 1;
+constexpr uint32_t MaxConfiguredEyeDimension = 8192;
 
 struct EyeSwapchainImage {
   XrSwapchainImageVulkanKHR xrImage{XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR};
@@ -410,8 +412,10 @@ bool initialize_runtime(std::string& message, std::vector<AuroraXRView>& views) 
     }
 
     EyeSwapchain& eye = g_runtime.eyes[eyeIndex];
-    eye.width = configView.recommendedImageRectWidth;
-    eye.height = configView.recommendedImageRectHeight;
+    eye.width = g_config.openXREyeWidth != 0 ? std::min(g_config.openXREyeWidth, MaxConfiguredEyeDimension)
+                                             : configView.recommendedImageRectWidth;
+    eye.height = g_config.openXREyeHeight != 0 ? std::min(g_config.openXREyeHeight, MaxConfiguredEyeDimension)
+                                               : configView.recommendedImageRectHeight;
 
     XrSwapchainCreateInfo swapchainCreateInfo{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT |
