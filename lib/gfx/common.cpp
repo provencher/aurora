@@ -265,6 +265,11 @@ void set_scissor(const ClipRect& cmd) noexcept {
   }
 }
 
+static void refresh_cached_efb_viewport_and_scissor() noexcept {
+  g_cachedViewport = gx::map_logical_viewport(gx::g_gxState.logicalViewport);
+  g_cachedScissor = gx::map_logical_scissor(gx::g_gxState.logicalScissor);
+}
+
 template <>
 void push_draw_command(clear::DrawData data) {
   push_draw_command(ShaderDrawCommand{.type = ShaderType::Clear, .clear = data});
@@ -364,6 +369,7 @@ bool set_efb_render_targets(const EfbRenderTargets& targets, bool forceRender) n
   pass.clearDepthValue = gx::clear_depth_value();
   apply_efb_targets(pass, targets, forceRender);
   g_currentRenderPass = static_cast<u32>(g_renderPasses.size() - 1);
+  refresh_cached_efb_viewport_and_scissor();
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
   return true;
@@ -384,6 +390,7 @@ void restore_default_efb_render_targets() noexcept {
   pass.clearDepth = false;
   set_efb_targets(pass);
   g_currentRenderPass = static_cast<u32>(g_renderPasses.size() - 1);
+  refresh_cached_efb_viewport_and_scissor();
   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
