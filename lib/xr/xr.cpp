@@ -88,6 +88,7 @@ struct Runtime {
   std::vector<XrCompositionLayerProjectionView> layerViews;
   std::vector<EyeSwapchain> eyes;
   int64_t colorFormat = 0;
+  bool suppressProjectionLayers = false;
 };
 
 Runtime g_runtime;
@@ -226,6 +227,13 @@ void update_view_from_xr(AuroraXRView& out, const XrView& view, XrViewStateFlags
 }
 
 bool initialize_runtime(std::string& message, std::vector<AuroraXRView>& views) {
+  if (const char* nullCompositor = std::getenv("XRT_COMPOSITOR_NULL");
+      nullCompositor != nullptr &&
+      (std::strcmp(nullCompositor, "TRUE") == 0 || std::strcmp(nullCompositor, "true") == 0 ||
+       std::strcmp(nullCompositor, "1") == 0)) {
+    g_runtime.suppressProjectionLayers = true;
+  }
+
   uint32_t extensionCount = 0;
   XrResult result = xrEnumerateInstanceExtensionProperties(nullptr, 0, &extensionCount, nullptr);
   if (XR_FAILED(result)) {
@@ -443,26 +451,6 @@ bool initialize_runtime(std::string& message, std::vector<AuroraXRView>& views) 
       eye.images[imageIndex].xrImage = xrImages[imageIndex];
     }
 
-    const wgpu::TextureDescriptor wrapperDescriptor{
-        .label = "OpenXR swapchain image",
-        .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
-                 wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::CopyDst,
-        .dimension = wgpu::TextureDimension::e2D,
-        .size = {.width = eye.width, .height = eye.height, .depthOrArrayLayers = 1},
-        .format = wgpuFormat,
-        .mipLevelCount = 1,
-        .sampleCount = XrSwapchainSampleCount,
-    };
-    for (EyeSwapchainImage& image : eye.images) {
-      image.texture = webgpu::wrap_dawn_vulkan_swapchain_image(image.xrImage.image, wrapperDescriptor);
-      if (image.texture == nullptr) {
-        message = append_dawn_interop("Dawn failed to wrap OpenXR runtime-owned VkImage for eye " +
-                                      std::to_string(eyeIndex));
-        return false;
-      }
-      image.view = image.texture.CreateView();
-    }
-
     eye.depth = webgpu::create_depth_texture(eye.width, eye.height, XrSwapchainSampleCount);
 
     AuroraXRView view{};
@@ -567,11 +555,13 @@ void end_runtime_frame_after_submit() noexcept {
     return;
   }
 
-  bool submitProjectionLayer = g_state.frameState.shouldRender && g_runtime.eyes.size() == g_runtime.layerViews.size();
+  bool submitProjectionLayer = !g_runtime.suppressProjectionLayers && g_state.frameState.shouldRender &&
+                               g_runtime.eyes.size() == g_runtime.layerViews.size();
   for (uint32_t eyeIndex = 0; eyeIndex < g_runtime.eyes.size(); ++eyeIndex) {
     EyeSwapchain& eye = g_runtime.eyes[eyeIndex];
     submitProjectionLayer = submitProjectionLayer && eye.rendered;
     if (eye.acquired) {
+      const uint32_t acquiredImageIndex = eye.acquiredImageIndex;
       XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
       const XrResult result = xrReleaseSwapchainImage(eye.swapchain, &releaseInfo);
       if (XR_FAILED(result)) {
@@ -579,6 +569,11 @@ void end_runtime_frame_after_submit() noexcept {
         submitProjectionLayer = false;
       }
       eye.acquired = false;
+      eye.acquiredImageIndex = std::numeric_limits<uint32_t>::max();
+      if (acquiredImageIndex < eye.images.size()) {
+        eye.images[acquiredImageIndex].view = {};
+        eye.images[acquiredImageIndex].texture = {};
+      }
     }
   }
 
@@ -802,7 +797,29 @@ bool begin_eye(uint32_t eyeIndex) noexcept {
     return false;
   }
 
-  const EyeSwapchainImage& image = eye.images[eye.acquiredImageIndex];
+  EyeSwapchainImage& image = eye.images[eye.acquiredImageIndex];
+  const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format(g_runtime.colorFormat);
+  const wgpu::TextureDescriptor wrapperDescriptor{
+      .label = "OpenXR swapchain image",
+      .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc |
+               wgpu::TextureUsage::CopyDst,
+      .dimension = wgpu::TextureDimension::e2D,
+      .size = {.width = eye.width, .height = eye.height, .depthOrArrayLayers = 1},
+      .format = wgpuFormat,
+      .mipLevelCount = 1,
+      .sampleCount = XrSwapchainSampleCount,
+  };
+  image.texture = webgpu::wrap_dawn_vulkan_swapchain_image(image.xrImage.image, wrapperDescriptor);
+  if (image.texture == nullptr) {
+    XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(eye.swapchain, &releaseInfo);
+    eye.acquired = false;
+    eye.acquiredImageIndex = std::numeric_limits<uint32_t>::max();
+    set_status(AURORA_XR_LOST, "Dawn failed to wrap acquired OpenXR swapchain image");
+    return false;
+  }
+  image.view = image.texture.CreateView();
+
   const gfx::EfbRenderTargets targets{
       .colorView = image.view,
       .depthView = eye.depth.view,
@@ -815,7 +832,10 @@ bool begin_eye(uint32_t eyeIndex) noexcept {
   if (!gfx::set_efb_render_targets(targets, true)) {
     XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(eye.swapchain, &releaseInfo);
+    image.view = {};
+    image.texture = {};
     eye.acquired = false;
+    eye.acquiredImageIndex = std::numeric_limits<uint32_t>::max();
     return false;
   }
 
