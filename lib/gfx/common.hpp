@@ -214,6 +214,17 @@ using webgpu::Viewport;
 struct TextureRef;
 using TextureHandle = std::shared_ptr<TextureRef>;
 
+struct EfbRenderTargets {
+  wgpu::TextureView colorView;
+  wgpu::TextureView resolveView;
+  wgpu::TextureView depthView;
+  wgpu::Texture copySourceTexture;
+  wgpu::TextureView copySourceView;
+  wgpu::TextureView copySourceDepthView;
+  wgpu::Extent3D targetSize;
+  uint32_t msaaSamples = 1;
+};
+
 enum class ShaderType : uint8_t {
   Clear = 0,
   GX = 1,
@@ -236,6 +247,8 @@ void begin_offscreen(uint32_t width, uint32_t height);
 void end_offscreen();
 bool is_offscreen() noexcept;
 uint32_t get_sample_count() noexcept;
+bool set_efb_render_targets(const EfbRenderTargets& targets, bool forceRender) noexcept;
+void restore_default_efb_render_targets() noexcept;
 void clear_caches() noexcept;
 
 namespace tex_palette_conv {

@@ -185,7 +185,7 @@ Viewport calculate_present_viewport(uint32_t surface_width, uint32_t surface_hei
   };
 }
 
-static TextureWithSampler create_depth_texture(uint32_t width, uint32_t height) {
+TextureWithSampler create_depth_texture(uint32_t width, uint32_t height, uint32_t sampleCount) {
   const wgpu::Extent3D size{
       .width = width,
       .height = height,
@@ -199,7 +199,7 @@ static TextureWithSampler create_depth_texture(uint32_t width, uint32_t height) 
       .size = size,
       .format = format,
       .mipLevelCount = 1,
-      .sampleCount = g_graphicsConfig.msaaSamples,
+      .sampleCount = sampleCount,
   };
   auto texture = g_device.CreateTexture(&textureDescriptor);
 
@@ -718,7 +718,7 @@ void resize_swapchain(uint32_t width, uint32_t height, uint32_t native_width, ui
   g_surface.Configure(&surfaceConfiguration);
   g_frameBuffer = create_render_texture(width, height, true);
   g_frameBufferResolved = create_render_texture(width, height, false);
-  g_depthBuffer = create_depth_texture(width, height);
+  g_depthBuffer = create_depth_texture(width, height, g_graphicsConfig.msaaSamples);
   g_CopyBindGroup = create_copy_bind_group(present_source());
 }
 } // namespace aurora::webgpu

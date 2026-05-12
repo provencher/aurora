@@ -686,7 +686,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
         .mipLevelCount = 1,
         .sampleCount = swapchainCreateInfo.sampleCount,
     };
-    if (!webgpu::wrap_dawn_vulkan_swapchain_image(images[imageIndex].image, wrapperDescriptor)) {
+    if (webgpu::wrap_dawn_vulkan_swapchain_image(images[imageIndex].image, wrapperDescriptor) == nullptr) {
       XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
       xrReleaseSwapchainImage(swapchain, &releaseInfo);
       destroySwapchain();

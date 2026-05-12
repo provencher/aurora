@@ -144,6 +144,7 @@ struct RenderPass {
   CommandList commands;
   bool clearColor = true;
   bool clearDepth = true;
+  bool forceRender = false;
   std::vector<tex_palette_conv::ConvRequest> paletteConvs;
 };
 static std::vector<RenderPass> g_renderPasses;
@@ -154,18 +155,40 @@ static Viewport g_suspendedEfbViewport;
 static ClipRect g_suspendedEfbScissor;
 static webgpu::TextureWithSampler g_offscreenColor;
 static webgpu::TextureWithSampler g_offscreenDepth;
+static std::optional<EfbRenderTargets> g_efbTargetOverride;
+static bool g_efbTargetOverrideForceRender = false;
+
+static void apply_efb_targets(RenderPass& pass, const EfbRenderTargets& targets, bool forceRender) {
+  pass.colorView = targets.colorView;
+  pass.resolveView = targets.resolveView;
+  pass.depthView = targets.depthView;
+  pass.copySourceTexture = targets.copySourceTexture;
+  pass.copySourceView = targets.copySourceView;
+  pass.copySourceDepthView = targets.copySourceDepthView;
+  pass.targetSize = targets.targetSize;
+  pass.msaaSamples = targets.msaaSamples;
+  pass.forceRender = forceRender;
+}
 
 static void set_efb_targets(RenderPass& pass) {
-  pass.colorView = webgpu::g_frameBuffer.view;
-  pass.resolveView = webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : nullptr;
-  pass.depthView = webgpu::g_depthBuffer.view;
-  pass.copySourceTexture =
-      webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.texture : webgpu::g_frameBuffer.texture;
-  pass.copySourceView =
-      webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : webgpu::g_frameBuffer.view;
-  pass.copySourceDepthView = webgpu::g_depthBuffer.view;
-  pass.targetSize = webgpu::g_frameBuffer.size;
-  pass.msaaSamples = webgpu::g_graphicsConfig.msaaSamples;
+  if (g_efbTargetOverride) {
+    apply_efb_targets(pass, *g_efbTargetOverride, g_efbTargetOverrideForceRender);
+    return;
+  }
+
+  EfbRenderTargets targets{
+      .colorView = webgpu::g_frameBuffer.view,
+      .resolveView = webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : nullptr,
+      .depthView = webgpu::g_depthBuffer.view,
+      .copySourceTexture =
+          webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.texture : webgpu::g_frameBuffer.texture,
+      .copySourceView =
+          webgpu::g_graphicsConfig.msaaSamples > 1 ? webgpu::g_frameBufferResolved.view : webgpu::g_frameBuffer.view,
+      .copySourceDepthView = webgpu::g_depthBuffer.view,
+      .targetSize = webgpu::g_frameBuffer.size,
+      .msaaSamples = webgpu::g_graphicsConfig.msaaSamples,
+  };
+  apply_efb_targets(pass, targets, false);
 }
 
 struct OffscreenCacheKey {
@@ -320,6 +343,49 @@ bool is_offscreen() noexcept { return g_inOffscreen; }
 uint32_t get_sample_count() noexcept {
   CHECK(g_currentRenderPass != UINT32_MAX, "get_sample_count called outside of a frame");
   return g_renderPasses[g_currentRenderPass].msaaSamples;
+}
+
+bool set_efb_render_targets(const EfbRenderTargets& targets, bool forceRender) noexcept {
+  if (targets.colorView == nullptr || targets.depthView == nullptr || targets.copySourceTexture == nullptr ||
+      targets.copySourceView == nullptr || targets.copySourceDepthView == nullptr || targets.targetSize.width == 0 ||
+      targets.targetSize.height == 0 || targets.msaaSamples == 0 || g_inOffscreen) {
+    return false;
+  }
+
+  g_efbTargetOverride = targets;
+  g_efbTargetOverrideForceRender = forceRender;
+
+  if (g_currentRenderPass == UINT32_MAX) {
+    return true;
+  }
+
+  auto& pass = g_renderPasses.emplace_back();
+  pass.clearColorValue = gx::g_gxState.clearColor;
+  pass.clearDepthValue = gx::clear_depth_value();
+  apply_efb_targets(pass, targets, forceRender);
+  g_currentRenderPass = static_cast<u32>(g_renderPasses.size() - 1);
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
+  return true;
+}
+
+void restore_default_efb_render_targets() noexcept {
+  g_efbTargetOverride.reset();
+  g_efbTargetOverrideForceRender = false;
+
+  if (g_currentRenderPass == UINT32_MAX || g_inOffscreen) {
+    return;
+  }
+
+  auto& pass = g_renderPasses.emplace_back();
+  pass.clearColorValue = gx::g_gxState.clearColor;
+  pass.clearDepthValue = gx::clear_depth_value();
+  pass.clearColor = false;
+  pass.clearDepth = false;
+  set_efb_targets(pass);
+  g_currentRenderPass = static_cast<u32>(g_renderPasses.size() - 1);
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = g_cachedViewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = g_cachedScissor});
 }
 
 void clear_caches() noexcept {
@@ -605,6 +671,8 @@ void shutdown() {
   g_offscreenCache.clear();
   g_offscreenColor = {};
   g_offscreenDepth = {};
+  g_efbTargetOverride.reset();
+  g_efbTargetOverrideForceRender = false;
   g_staticBindGroup = {};
   g_staticBindGroupLayout = {};
   g_uniformBindGroup = {};
@@ -672,6 +740,8 @@ bool begin_frame() {
   g_stats.drawCallCount = 0;
   g_stats.mergedDrawCallCount = 0;
   g_suspendedEfbPass.reset();
+  g_efbTargetOverride.reset();
+  g_efbTargetOverrideForceRender = false;
 
   g_renderPasses.emplace_back();
   set_efb_targets(g_renderPasses[0]);
@@ -762,7 +832,7 @@ void render(wgpu::CommandEncoder& cmd) {
     }
     if (i == g_renderPasses.size() - 1) {
       ASSERT(!passInfo.resolveTarget, "Final render pass must not have resolve target");
-    } else if (!passInfo.resolveTarget) {
+    } else if (!passInfo.resolveTarget && !passInfo.forceRender) {
       // Skip intermediate render passes without resolve target
       continue;
     }

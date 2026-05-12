@@ -26,9 +26,10 @@ PFN_vkVoidFunction get_dawn_vulkan_instance_proc_addr(const char* name) noexcept
   return dawn::native::vulkan::GetInstanceProcAddr(g_device.Get(), name);
 }
 
-bool wrap_dawn_vulkan_swapchain_image(VkImage image, const wgpu::TextureDescriptor& textureDescriptor) noexcept {
+wgpu::Texture wrap_dawn_vulkan_swapchain_image(VkImage image,
+                                               const wgpu::TextureDescriptor& textureDescriptor) noexcept {
   if (image == VK_NULL_HANDLE || !g_device || g_backendType != wgpu::BackendType::Vulkan) {
-    return false;
+    return {};
   }
 
   const WGPUTextureDescriptor& nativeDescriptor = textureDescriptor;
@@ -36,9 +37,7 @@ bool wrap_dawn_vulkan_swapchain_image(VkImage image, const wgpu::TextureDescript
       .textureDescriptor = &nativeDescriptor,
       .image = image,
   };
-  wgpu::Texture texture = wgpu::Texture::Acquire(
-      dawn::native::vulkan::WrapVulkanSwapchainImage(g_device.Get(), &descriptor));
-  return texture != nullptr;
+  return wgpu::Texture::Acquire(dawn::native::vulkan::WrapVulkanSwapchainImage(g_device.Get(), &descriptor));
 }
 #endif
 
