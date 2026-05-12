@@ -12,12 +12,14 @@ option(AURORA_ENABLE_DVD "Enable DVD implementation backed by nod" OFF)  # TODO:
 option(AURORA_ENABLE_CARD "Enable CARD implementation based on kabufuda" ON)
 option(AURORA_ENABLE_RMLUI "Enable HTML/CSS Based UI Library for use in end-user UI development." OFF)
 option(AURORA_ENABLE_OPENXR "Enable optional OpenXR SDK/runtime probing" OFF)
+option(AURORA_FETCH_OPENXR_SDK "Fetch Khronos OpenXR-SDK if AURORA_ENABLE_OPENXR is ON and no OpenXR package is found" OFF)
 option(AURORA_CACHE_USE_ZSTD "Compress WebGPU cache entries with zstd" ON)
 
 # Dependency versions
 set(AURORA_DAWN_VERSION "v20260423.175430" CACHE STRING "Dawn version tag (https://github.com/encounter/dawn-build/releases)")
 set(AURORA_SDL3_VERSION "3.4.4" CACHE STRING "SDL3 version tag (https://github.com/libsdl-org/SDL/releases)")
 set(AURORA_NOD_VERSION "v2.0.0-alpha.8" CACHE STRING "nod version tag (https://github.com/encounter/nod/releases)")
+set(AURORA_OPENXR_SDK_VERSION "release-1.1.59" CACHE STRING "OpenXR-SDK ref (https://github.com/KhronosGroup/OpenXR-SDK)")
 
 # Platform-specific defaults
 if (CMAKE_CROSSCOMPILING)
@@ -59,6 +61,25 @@ add_subdirectory(extern)
 set(AURORA_OPENXR_LOADER_TARGET "")
 if (AURORA_ENABLE_OPENXR)
   find_package(OpenXR CONFIG QUIET)
+  if (NOT TARGET OpenXR::openxr_loader AND NOT TARGET openxr_loader AND AURORA_FETCH_OPENXR_SDK)
+    message(STATUS "aurora: Fetching Khronos OpenXR-SDK")
+    set(BUILD_TESTS OFF CACHE INTERNAL "")
+    set(BUILD_API_LAYERS OFF CACHE INTERNAL "")
+    set(BUILD_CONFORMANCE_TESTS OFF CACHE INTERNAL "")
+    set(BUILD_CONFORMANCE_CLI OFF CACHE INTERNAL "")
+    if (WIN32)
+      # The SDK's static-loader target links the dynamic MSVC runtime on Windows.
+      # Build the DLL loader instead so /MT Dusk builds do not hit CRT conflicts.
+      set(DYNAMIC_LOADER ON CACHE INTERNAL "")
+    endif ()
+    include(FetchContent)
+    FetchContent_Declare(openxr_sdk
+      URL "https://github.com/KhronosGroup/OpenXR-SDK/archive/${AURORA_OPENXR_SDK_VERSION}.tar.gz"
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(openxr_sdk)
+  endif ()
   if (TARGET OpenXR::openxr_loader)
     set(AURORA_OPENXR_LOADER_TARGET OpenXR::openxr_loader)
   elseif (TARGET openxr_loader)

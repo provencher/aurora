@@ -45,8 +45,20 @@ endif ()
 
 if (AURORA_ENABLE_GX)
     target_compile_definitions(aurora_core PUBLIC AURORA_ENABLE_GX WEBGPU_DAWN)
-    target_sources(aurora_core PRIVATE lib/webgpu/gpu.cpp lib/webgpu/gpu_cache.cpp lib/dawn/BackendBinding.cpp)
+    target_sources(aurora_core PRIVATE
+            lib/webgpu/dawn_vulkan_interop.cpp
+            lib/webgpu/gpu.cpp
+            lib/webgpu/gpu_cache.cpp
+            lib/dawn/BackendBinding.cpp)
     target_link_libraries(aurora_core PRIVATE dawn::webgpu_dawn)
+    if (AURORA_DAWN_OPENXR_PATCH_APPLIED)
+        target_compile_definitions(aurora_core PRIVATE AURORA_DAWN_OPENXR_HANDLES)
+        if (TARGET Vulkan::Headers)
+            target_link_libraries(aurora_core PRIVATE Vulkan::Headers)
+        elseif (DAWN_VULKAN_HEADERS_DIR)
+            target_include_directories(aurora_core PRIVATE "${DAWN_VULKAN_HEADERS_DIR}/include")
+        endif ()
+    endif ()
     if (DAWN_ENABLE_VULKAN)
         target_compile_definitions(aurora_core PRIVATE DAWN_ENABLE_BACKEND_VULKAN)
     endif ()

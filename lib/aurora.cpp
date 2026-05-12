@@ -70,6 +70,16 @@ constexpr std::array<AuroraBackend, 0> PreferredBackendOrder{};
 
 bool g_initialFrame = false;
 
+bool xr_startup_satisfied() noexcept {
+  switch (xr::status()) {
+  case AURORA_XR_READY:
+  case AURORA_XR_ACTIVE:
+    return true;
+  default:
+    return false;
+  }
+}
+
 AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexcept {
   g_config = config;
   Log.info("Aurora initializing");
@@ -148,7 +158,7 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
 #endif
 
   xr::initialize(g_config, selectedBackend);
-  if (g_config.requireOpenXR && !xr::is_active()) {
+  if (g_config.requireOpenXR && !xr_startup_satisfied()) {
     ASSERT(false, "Required OpenXR initialization failed: {}", xr::status_message());
   }
 

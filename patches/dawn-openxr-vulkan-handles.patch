@@ -1,0 +1,135 @@
+diff --git a/include/dawn/native/VulkanBackend.h b/include/dawn/native/VulkanBackend.h
+index 201bc3242..7a38dc4b5 100644
+--- a/include/dawn/native/VulkanBackend.h
++++ b/include/dawn/native/VulkanBackend.h
+@@ -41,6 +41,29 @@ DAWN_NATIVE_EXPORT VkInstance GetInstance(WGPUDevice device);
+ 
+ DAWN_NATIVE_EXPORT PFN_vkVoidFunction GetInstanceProcAddr(WGPUDevice device, const char* pName);
+ 
++struct DAWN_NATIVE_EXPORT VulkanDeviceHandles {
++    VkInstance instance = VK_NULL_HANDLE;
++    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
++    VkDevice device = VK_NULL_HANDLE;
++    VkQueue queue = VK_NULL_HANDLE;
++    uint32_t queueFamilyIndex = 0;
++    uint32_t queueIndex = 0;
++};
++
++// Dusk OpenXR integration hook. Returns false if the device is not a Vulkan Dawn device.
++DAWN_NATIVE_EXPORT bool GetDeviceHandles(WGPUDevice device, VulkanDeviceHandles* outHandles);
++
++struct DAWN_NATIVE_EXPORT VulkanSwapchainImageDescriptor {
++    const WGPUTextureDescriptor* textureDescriptor = nullptr;
++    VkImage image = VK_NULL_HANDLE;
++};
++
++// Dusk OpenXR integration hook. Wraps a runtime-owned VkImage without taking ownership of it.
++// The returned WGPUTexture must be released before the runtime releases or destroys the image.
++DAWN_NATIVE_EXPORT WGPUTexture WrapVulkanSwapchainImage(
++    WGPUDevice device,
++    const VulkanSwapchainImageDescriptor* descriptor);
++
+ enum class NeedsDedicatedAllocation {
+     Yes,
+     No,
+diff --git a/src/dawn/native/vulkan/BackendVk.cpp b/src/dawn/native/vulkan/BackendVk.cpp
+index c34bd5769..a0e439848 100644
+--- a/src/dawn/native/vulkan/BackendVk.cpp
++++ b/src/dawn/native/vulkan/BackendVk.cpp
+@@ -462,6 +462,10 @@ ResultOrError<VulkanGlobalKnobs> VulkanInstance::CreateVkInstance(const Instance
+         const InstanceExtInfo& info = GetInstanceExtInfo(ext);
+         extensionNames.push_back(info.name);
+     }
++    extensionNames.push_back(VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME);
++    extensionNames.push_back(VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
++    extensionNames.push_back(VK_KHR_EXTERNAL_SEMAPHORE_CAPABILITIES_EXTENSION_NAME);
++    extensionNames.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+ 
+     VkApplicationInfo appInfo;
+     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+diff --git a/src/dawn/native/vulkan/VulkanBackend.cpp b/src/dawn/native/vulkan/VulkanBackend.cpp
+index a06c4f393..6611d483f 100644
+--- a/src/dawn/native/vulkan/VulkanBackend.cpp
++++ b/src/dawn/native/vulkan/VulkanBackend.cpp
+@@ -30,11 +30,15 @@
+ 
+ #include <utility>
+ 
++#include <limits>
++
+ // Include vulkan_platform.h before VulkanBackend.h includes vulkan.h so that we use our version
+ // of the non-dispatchable handles.
+ #include "dawn/common/vulkan_platform.h"
+ #include "dawn/native/VulkanBackend.h"
+ #include "dawn/native/vulkan/DeviceVk.h"
++#include "dawn/native/vulkan/PhysicalDeviceVk.h"
++#include "dawn/native/vulkan/QueueVk.h"
+ #include "dawn/native/vulkan/TextureVk.h"
+ 
+ namespace dawn::native::vulkan {
+@@ -54,6 +58,65 @@ DAWN_NATIVE_EXPORT PFN_vkVoidFunction GetInstanceProcAddr(WGPUDevice device, con
+     return (*backendDevice->fn.GetInstanceProcAddr)(backendDevice->GetVkInstance(), pName);
+ }
+ 
++bool GetDeviceHandles(WGPUDevice device, VulkanDeviceHandles* outHandles) {
++    if (device == nullptr || outHandles == nullptr) {
++        return false;
++    }
++
++    Device* backendDevice = ToBackend(FromAPI(device));
++    Queue* backendQueue = ToBackend(backendDevice->GetQueue());
++    PhysicalDevice* backendPhysicalDevice = ToBackend(backendDevice->GetPhysicalDevice());
++    if (backendQueue == nullptr || backendPhysicalDevice == nullptr) {
++        return false;
++    }
++
++    *outHandles = {};
++    outHandles->instance = backendDevice->GetVkInstance();
++    outHandles->physicalDevice = backendPhysicalDevice->GetVkPhysicalDevice();
++    outHandles->device = backendDevice->GetVkDevice();
++    outHandles->queue = backendQueue->GetVkQueue();
++    outHandles->queueFamilyIndex = backendDevice->GetGraphicsQueueFamily();
++    outHandles->queueIndex = 0;
++    return outHandles->instance != VK_NULL_HANDLE && outHandles->physicalDevice != VK_NULL_HANDLE &&
++           outHandles->device != VK_NULL_HANDLE && outHandles->queue != VK_NULL_HANDLE &&
++           outHandles->queueFamilyIndex != std::numeric_limits<uint32_t>::max();
++}
++
++WGPUTexture WrapVulkanSwapchainImage(WGPUDevice device, const VulkanSwapchainImageDescriptor* descriptor) {
++    if (device == nullptr || descriptor == nullptr || descriptor->textureDescriptor == nullptr ||
++        descriptor->image == VK_NULL_HANDLE) {
++        return nullptr;
++    }
++
++    Device* backendDevice = ToBackend(FromAPI(device));
++    auto deviceGuard = backendDevice->GetGuard();
++
++    if (backendDevice->ConsumedError(backendDevice->ValidateIsAlive())) {
++        return nullptr;
++    }
++
++    TextureDescriptor reifiedDescriptor =
++        FromAPI(descriptor->textureDescriptor)->WithTrivialFrontendDefaults();
++    UnpackedPtr<TextureDescriptor> textureDescriptor;
++    if (backendDevice->ConsumedError(ValidateAndUnpack(&reifiedDescriptor), &textureDescriptor)) {
++        return nullptr;
++    }
++    if (backendDevice->ConsumedError(ValidateTextureDescriptor(backendDevice, textureDescriptor,
++                                                              AllowMultiPlanarTextureFormat::No))) {
++        return nullptr;
++    }
++    if (backendDevice->ConsumedError(
++            ValidateVulkanImageCanBeWrapped(backendDevice, textureDescriptor),
++            "validating that an OpenXR Vulkan swapchain image can be wrapped with %s.",
++            textureDescriptor)) {
++        return nullptr;
++    }
++
++    Ref<TextureBase> texture =
++        SwapChainTexture::Create(backendDevice, textureDescriptor, descriptor->image);
++    return ToAPI(ReturnToAPI(std::move(texture)));
++}
++
+ #if DAWN_PLATFORM_IS(LINUX)
+ ExternalImageDescriptorOpaqueFD::ExternalImageDescriptorOpaqueFD()
+     : ExternalImageDescriptorFD(ExternalImageType::OpaqueFD) {}

@@ -8,6 +8,9 @@ include_guard(GLOBAL)
 #   - DAWN_ENABLE_* backend variables are set for the target platform
 #   - AURORA_DAWN_IS_SHARED is set to TRUE/FALSE
 
+option(AURORA_DAWN_APPLY_OPENXR_PATCH "Apply Dusk's Dawn Vulkan handle patch for OpenXR experiments when using AURORA_DAWN_PROVIDER=vendor" OFF)
+set(AURORA_DAWN_OPENXR_PATCH_APPLIED OFF CACHE INTERNAL "Whether the Dusk OpenXR Dawn patch is applied" FORCE)
+
 # When using a non-vendored Dawn, we don't get DAWN_ENABLE_* from its build.
 # Infer from the target platform instead.
 function(_aurora_dawn_set_platform_backends)
@@ -98,10 +101,23 @@ if (_aurora_dawn_provider STREQUAL "vendor")
     endif ()
 
     include(FetchContent)
+    set(_aurora_dawn_patch_command "")
+    if (AURORA_DAWN_APPLY_OPENXR_PATCH)
+      find_package(Git REQUIRED)
+      set(_aurora_dawn_patch_command
+        ${CMAKE_COMMAND}
+          "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+          "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/../patches/dawn-openxr-vulkan-handles.patch"
+          "-DSOURCE_DIR=<SOURCE_DIR>"
+          -P "${CMAKE_CURRENT_LIST_DIR}/ApplyGitPatch.cmake"
+      )
+      set(AURORA_DAWN_OPENXR_PATCH_APPLIED ON CACHE INTERNAL "Whether the Dusk OpenXR Dawn patch is applied" FORCE)
+    endif ()
     FetchContent_Declare(dawn
       URL "https://github.com/google/dawn/archive/refs/tags/${AURORA_DAWN_VERSION}.tar.gz"
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
       EXCLUDE_FROM_ALL
+      PATCH_COMMAND ${_aurora_dawn_patch_command}
     )
     FetchContent_MakeAvailable(dawn)
     if (NOT TARGET webgpu_dawn)

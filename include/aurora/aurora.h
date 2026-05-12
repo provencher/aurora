@@ -116,7 +116,7 @@ typedef struct {
   bool enableOpenXR;
 
   /*
-   * If true, aurora_initialize() fails when requested OpenXR support cannot become active.
+   * If true, aurora_initialize() fails when requested OpenXR support cannot initialize to ready or active.
    */
   bool requireOpenXR;
 } AuroraConfig;
