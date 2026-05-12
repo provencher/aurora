@@ -2,6 +2,9 @@
 
 #include <aurora/aurora.h>
 
+#include "../webgpu/gpu.hpp"
+
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -19,6 +22,15 @@ void shutdown() noexcept;
 void on_aurora_frame_start() noexcept;
 void begin_frame() noexcept;
 void end_frame_after_submit() noexcept;
+
+struct SbsMirrorEye {
+  wgpu::BindGroup bindGroup;
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+
+bool sbs_mirror_enabled() noexcept;
+bool get_sbs_mirror_eyes(std::array<SbsMirrorEye, 2>& outEyes) noexcept;
 
 AuroraXRStatus status() noexcept;
 const char* status_message() noexcept;

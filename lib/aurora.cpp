@@ -294,8 +294,10 @@ void end_frame() noexcept {
                                                          webgpu::g_graphicsConfig.surfaceConfiguration.height,
                                                          presentSource.size.width, presentSource.size.height);
       wgpu::BindGroup presentBindGroup = webgpu::g_CopyBindGroup;
+      std::array<xr::SbsMirrorEye, 2> sbsMirrorEyes{};
+      const bool useXrSbsMirror = xr::get_sbs_mirror_eyes(sbsMirrorEyes);
     #if AURORA_ENABLE_RMLUI
-      if (rmlui::is_initialized()) {
+      if (!useXrSbsMirror && rmlui::is_initialized()) {
         const auto rmlOutput = rmlui::render(encoder, viewport);
         if (rmlOutput.texture != nullptr) {
           presentBindGroup = rmlOutput.copyBindGroup;
@@ -318,10 +320,24 @@ void end_frame() noexcept {
         const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
         // Copy EFB -> XFB (swapchain)
         pass.SetPipeline(webgpu::g_CopyPipeline);
-        pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
-        pass.SetViewport(viewport.left, viewport.top, viewport.width, viewport.height, viewport.znear, viewport.zfar);
-
-        pass.Draw(3);
+        if (useXrSbsMirror) {
+          const float surfaceWidth = static_cast<float>(webgpu::g_graphicsConfig.surfaceConfiguration.width);
+          const float halfWidth = surfaceWidth * 0.5f;
+          for (size_t i = 0; i < sbsMirrorEyes.size(); ++i) {
+            const auto eyeViewport =
+                webgpu::calculate_present_viewport(static_cast<uint32_t>(halfWidth),
+                                                   webgpu::g_graphicsConfig.surfaceConfiguration.height,
+                                                   sbsMirrorEyes[i].width, sbsMirrorEyes[i].height);
+            pass.SetBindGroup(0, sbsMirrorEyes[i].bindGroup, 0, nullptr);
+            pass.SetViewport((i == 0 ? 0.0f : halfWidth) + eyeViewport.left, eyeViewport.top, eyeViewport.width,
+                             eyeViewport.height, 0.f, 1.f);
+            pass.Draw(3);
+          }
+        } else {
+          pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
+          pass.SetViewport(viewport.left, viewport.top, viewport.width, viewport.height, viewport.znear, viewport.zfar);
+          pass.Draw(3);
+        }
         pass.End();
       }
       {

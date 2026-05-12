@@ -768,6 +768,47 @@ bool get_view(uint32_t index, AuroraXRView* outView) noexcept {
   return true;
 }
 
+bool sbs_mirror_enabled() noexcept {
+  if (const char* value = std::getenv("AURORA_XR_MIRROR_SBS"); value != nullptr) {
+    return value[0] != '\0' && std::strcmp(value, "0") != 0 && std::strcmp(value, "FALSE") != 0 &&
+           std::strcmp(value, "false") != 0;
+  }
+  return false;
+}
+
+bool get_sbs_mirror_eyes(std::array<SbsMirrorEye, 2>& outEyes) noexcept {
+#if defined(AURORA_HAS_OPENXR) && defined(AURORA_ENABLE_GX) && defined(AURORA_DAWN_OPENXR_HANDLES)
+  if (!sbs_mirror_enabled() || g_runtime.eyes.size() < outEyes.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < outEyes.size(); ++i) {
+    const EyeSwapchain& eye = g_runtime.eyes[i];
+    if (!eye.acquired || eye.acquiredImageIndex >= eye.images.size()) {
+      return false;
+    }
+    const EyeSwapchainImage& image = eye.images[eye.acquiredImageIndex];
+    if (image.texture == nullptr || image.view == nullptr) {
+      return false;
+    }
+    const webgpu::TextureWithSampler source{
+        .texture = image.texture,
+        .view = image.view,
+        .size = {.width = eye.width, .height = eye.height, .depthOrArrayLayers = 1},
+        .format = wgpu_format_from_vk_format(g_runtime.colorFormat),
+        .sampler = webgpu::g_frameBuffer.sampler,
+    };
+    outEyes[i] = {
+        .bindGroup = webgpu::create_copy_bind_group(source),
+        .width = eye.width,
+        .height = eye.height,
+    };
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
 bool begin_eye(uint32_t eyeIndex) noexcept {
   if (!should_render() || eyeIndex >= g_state.views.size() || g_state.eyeActive || g_state.flatUiActive) {
     return false;
