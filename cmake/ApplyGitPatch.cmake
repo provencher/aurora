@@ -62,8 +62,7 @@ else ()
   # Not a git repository (e.g., tarball extract) - use patch command
   # First check if already applied by checking if patch would reverse cleanly
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E environment
-    COMMAND patch --dry-run --reverse --ignore-whitespace --quiet -p1 < "${PATCH_FILE}"
+    COMMAND ${CMAKE_COMMAND} -E env bash -c "patch --dry-run --reverse --ignore-whitespace --quiet -p1 < '${PATCH_FILE}'"
     WORKING_DIRECTORY "${SOURCE_DIR}"
     RESULT_VARIABLE _patch_reverse_check_result
     OUTPUT_VARIABLE _patch_reverse_check_output
@@ -76,8 +75,7 @@ else ()
 
   # Check if patch applies cleanly
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E environment
-    COMMAND patch --dry-run --ignore-whitespace --quiet -p1 < "${PATCH_FILE}"
+    COMMAND ${CMAKE_COMMAND} -E env bash -c "patch --dry-run --ignore-whitespace --quiet -p1 < '${PATCH_FILE}'"
     WORKING_DIRECTORY "${SOURCE_DIR}"
     RESULT_VARIABLE _patch_check_result
     OUTPUT_VARIABLE _patch_check_output
@@ -85,8 +83,7 @@ else ()
   )
   if (_patch_check_result EQUAL 0)
     execute_process(
-      COMMAND "${CMAKE_COMMAND}" -E environment
-      COMMAND patch --ignore-whitespace -p1 < "${PATCH_FILE}"
+      COMMAND ${CMAKE_COMMAND} -E env bash -c "patch --ignore-whitespace -p1 < '${PATCH_FILE}'"
       WORKING_DIRECTORY "${SOURCE_DIR}"
       RESULT_VARIABLE _patch_apply_result
       OUTPUT_VARIABLE _patch_apply_output
