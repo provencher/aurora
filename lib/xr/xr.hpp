@@ -18,6 +18,8 @@ struct ProbeResult {
 
 void initialize(const AuroraConfig& config, AuroraBackend selectedBackend) noexcept;
 void shutdown() noexcept;
+void prepare_dawn_openxr_vulkan_hooks(const AuroraConfig& config, AuroraBackend selectedBackend) noexcept;
+void clear_dawn_openxr_vulkan_hooks() noexcept;
 
 void on_aurora_frame_start() noexcept;
 void begin_frame() noexcept;
@@ -29,11 +31,23 @@ struct SbsMirrorEye {
   uint32_t height = 0;
 };
 
+struct FlatUiTarget {
+  wgpu::Texture texture;
+  wgpu::TextureView view;
+  wgpu::BindGroup bindGroup;
+  uint32_t width = 0;
+  uint32_t height = 0;
+};
+
 bool sbs_mirror_enabled() noexcept;
 bool get_sbs_mirror_eyes(std::array<SbsMirrorEye, 2>& outEyes) noexcept;
+bool get_default_mirror_eye(SbsMirrorEye& outEye) noexcept;
+bool ensure_flat_ui_target() noexcept;
+bool get_flat_ui_target(FlatUiTarget& outTarget) noexcept;
 
 AuroraXRStatus status() noexcept;
 const char* status_message() noexcept;
+AuroraXRVulkanExtensionValidation vulkan_extension_validation() noexcept;
 bool is_requested() noexcept;
 bool is_active() noexcept;
 bool should_render() noexcept;

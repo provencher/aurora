@@ -127,12 +127,15 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   bool windowCreated = false;
   const auto tryBackend = [&](AuroraBackend backend) {
     selectedBackend = backend;
+    xr::prepare_dawn_openxr_vulkan_hooks(g_config, selectedBackend);
     if (!window::create_window(selectedBackend)) {
+      xr::clear_dawn_openxr_vulkan_hooks();
       return false;
     }
     if (webgpu::initialize(selectedBackend)) {
       return true;
     }
+    xr::clear_dawn_openxr_vulkan_hooks();
     window::destroy_window();
     return false;
   };
@@ -233,62 +236,89 @@ const AuroraEvent* update() noexcept {
     g_initialFrame = false;
     input::initialize();
   }
-  return window::poll_events();
+  const bool waitWhenPaused = !xr::is_active() && !xr::should_render();
+  return window::poll_events(waitWhenPaused);
 }
 
 bool begin_frame() noexcept {
   ZoneScoped;
   xr::on_aurora_frame_start();
+  xr::begin_frame();
 #ifdef AURORA_ENABLE_GX
+  const bool allowHeadlessXrFrame = xr::is_active() || xr::should_render();
   {
     window::SurfaceLock surfaceLock;
     if (!window::is_presentable()) {
-      webgpu::release_surface();
-      return false;
-    }
-    if (window::is_paused()) {
-      return false;
-    }
-    if (!g_surface) {
+      if (!allowHeadlessXrFrame) {
+        webgpu::release_surface();
+        xr::end_frame_after_submit();
+        return false;
+      }
+    } else if (window::is_paused()) {
+      if (!allowHeadlessXrFrame) {
+        xr::end_frame_after_submit();
+        return false;
+      }
+    } else if (!g_surface) {
       webgpu::refresh_surface(true);
-      if (!g_surface) {
+      if (!g_surface && !allowHeadlessXrFrame) {
+        xr::end_frame_after_submit();
         return false;
       }
     }
-    wgpu::SurfaceTexture surfaceTexture;
-    g_surface.GetCurrentTexture(&surfaceTexture);
-    switch (surfaceTexture.status) {
-    case wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal:
-      g_currentView = surfaceTexture.texture.CreateView();
-      break;
-    case wgpu::SurfaceGetCurrentTextureStatus::Timeout:
-      Log.warn("Surface texture acquisition timed out");
-      return false;
-    case wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal:
-    case wgpu::SurfaceGetCurrentTextureStatus::Outdated:
-      Log.info("Surface texture is {}, reconfiguring swapchain", magic_enum::enum_name(surfaceTexture.status));
-      webgpu::refresh_surface(false);
-      return false;
-    case wgpu::SurfaceGetCurrentTextureStatus::Lost:
-      Log.warn("Surface texture is {}, releasing surface", magic_enum::enum_name(surfaceTexture.status));
-      webgpu::release_surface();
-    case wgpu::SurfaceGetCurrentTextureStatus::Error:
-      Log.warn("Surface texture is {}, dropping surface", magic_enum::enum_name(surfaceTexture.status));
-      g_surface = {};
-      return false;
-    default:
-      Log.error("Failed to get surface texture: {}", magic_enum::enum_name(surfaceTexture.status));
-      return false;
+    if (window::is_presentable() && !window::is_paused() && g_surface) {
+      wgpu::SurfaceTexture surfaceTexture;
+      g_surface.GetCurrentTexture(&surfaceTexture);
+      switch (surfaceTexture.status) {
+      case wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal:
+        g_currentView = surfaceTexture.texture.CreateView();
+        break;
+      case wgpu::SurfaceGetCurrentTextureStatus::Timeout:
+        Log.warn("Surface texture acquisition timed out");
+        if (!allowHeadlessXrFrame) {
+          xr::end_frame_after_submit();
+          return false;
+        }
+        break;
+      case wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal:
+      case wgpu::SurfaceGetCurrentTextureStatus::Outdated:
+        Log.info("Surface texture is {}, reconfiguring swapchain", magic_enum::enum_name(surfaceTexture.status));
+        webgpu::refresh_surface(false);
+        if (!allowHeadlessXrFrame) {
+          xr::end_frame_after_submit();
+          return false;
+        }
+        break;
+      case wgpu::SurfaceGetCurrentTextureStatus::Lost:
+        Log.warn("Surface texture is {}, releasing surface", magic_enum::enum_name(surfaceTexture.status));
+        webgpu::release_surface();
+        [[fallthrough]];
+      case wgpu::SurfaceGetCurrentTextureStatus::Error:
+        Log.warn("Surface texture is {}, dropping surface", magic_enum::enum_name(surfaceTexture.status));
+        g_surface = {};
+        if (!allowHeadlessXrFrame) {
+          xr::end_frame_after_submit();
+          return false;
+        }
+        break;
+      default:
+        Log.error("Failed to get surface texture: {}", magic_enum::enum_name(surfaceTexture.status));
+        if (!allowHeadlessXrFrame) {
+          xr::end_frame_after_submit();
+          return false;
+        }
+        break;
+      }
     }
   }
 
   imgui::new_frame(window::get_window_size());
   if (!gfx::begin_frame()) {
     g_currentView = {};
+    xr::end_frame_after_submit();
     return false;
   }
 #endif
-  xr::begin_frame();
   return true;
 }
 
@@ -302,6 +332,66 @@ void end_frame() noexcept {
   auto encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
   gfx::end_frame(encoder);
   gfx::render(encoder);
+  if (xr::ensure_flat_ui_target()) {
+    xr::FlatUiTarget flatUiTarget{};
+    if (xr::get_flat_ui_target(flatUiTarget)) {
+      const webgpu::Viewport flatUiViewport{
+          .left = 0.f,
+          .top = 0.f,
+          .width = static_cast<float>(flatUiTarget.width),
+          .height = static_cast<float>(flatUiTarget.height),
+          .znear = 0.f,
+          .zfar = 1.f,
+      };
+      wgpu::LoadOp overlayLoadOp = wgpu::LoadOp::Load;
+    #if AURORA_ENABLE_RMLUI
+      if (rmlui::is_initialized()) {
+        const auto rmlOutput = rmlui::render(encoder, flatUiViewport);
+        if (rmlOutput.texture != nullptr) {
+          const std::array attachments{
+              wgpu::RenderPassColorAttachment{
+                  .view = flatUiTarget.view,
+                  .loadOp = overlayLoadOp,
+                  .storeOp = wgpu::StoreOp::Store,
+              },
+          };
+          const wgpu::RenderPassDescriptor renderPassDescriptor{
+              .label = "XR flat UI RmlUi composite pass",
+              .colorAttachmentCount = attachments.size(),
+              .colorAttachments = attachments.data(),
+          };
+          const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+          pass.SetPipeline(webgpu::g_CopyPipeline);
+          pass.SetBindGroup(0, rmlOutput.copyBindGroup, 0, nullptr);
+          pass.SetViewport(flatUiViewport.left, flatUiViewport.top, flatUiViewport.width, flatUiViewport.height,
+                           flatUiViewport.znear, flatUiViewport.zfar);
+          pass.Draw(3);
+          pass.End();
+          overlayLoadOp = wgpu::LoadOp::Load;
+        }
+      }
+    #endif
+      {
+        const std::array attachments{
+            wgpu::RenderPassColorAttachment{
+                .view = flatUiTarget.view,
+                .loadOp = overlayLoadOp,
+                .storeOp = wgpu::StoreOp::Store,
+            },
+        };
+        const wgpu::RenderPassDescriptor renderPassDescriptor{
+            .label = "XR flat UI ImGui render pass",
+            .colorAttachmentCount = attachments.size(),
+            .colorAttachments = attachments.data(),
+        };
+        const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+        pass.SetViewport(flatUiViewport.left, flatUiViewport.top, flatUiViewport.width, flatUiViewport.height,
+                         flatUiViewport.znear, flatUiViewport.zfar);
+        imgui::render(pass);
+        pass.End();
+      }
+    }
+  }
   {
     window::SurfaceLock surfaceLock;
     if (window::is_presentable() && g_surface && g_currentView) {
@@ -312,8 +402,12 @@ void end_frame() noexcept {
       wgpu::BindGroup presentBindGroup = webgpu::g_CopyBindGroup;
       std::array<xr::SbsMirrorEye, 2> sbsMirrorEyes{};
       const bool useXrSbsMirror = xr::get_sbs_mirror_eyes(sbsMirrorEyes);
+      xr::SbsMirrorEye xrMirrorEye{};
+      xr::FlatUiTarget xrMirrorFlatUi{};
+      const bool useXrDefaultMirror =
+          !useXrSbsMirror && xr::get_default_mirror_eye(xrMirrorEye) && xr::get_flat_ui_target(xrMirrorFlatUi);
     #if AURORA_ENABLE_RMLUI
-      if (!useXrSbsMirror && rmlui::is_initialized()) {
+      if (!useXrSbsMirror && !useXrDefaultMirror && rmlui::is_initialized()) {
         const auto rmlOutput = rmlui::render(encoder, viewport);
         if (rmlOutput.texture != nullptr) {
           presentBindGroup = rmlOutput.copyBindGroup;
@@ -336,7 +430,21 @@ void end_frame() noexcept {
         const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
         // Copy EFB -> XFB (swapchain)
         pass.SetPipeline(webgpu::g_CopyPipeline);
-        if (useXrSbsMirror) {
+        if (useXrDefaultMirror) {
+          const auto eyeViewport =
+              webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
+                                                 webgpu::g_graphicsConfig.surfaceConfiguration.height,
+                                                 xrMirrorEye.width, xrMirrorEye.height);
+          pass.SetBindGroup(0, xrMirrorEye.bindGroup, 0, nullptr);
+          pass.SetViewport(eyeViewport.left, eyeViewport.top, eyeViewport.width, eyeViewport.height,
+                           eyeViewport.znear, eyeViewport.zfar);
+          pass.Draw(3);
+          if (xrMirrorFlatUi.bindGroup != nullptr) {
+            pass.SetPipeline(webgpu::g_AlphaBlendCopyPipeline);
+            pass.SetBindGroup(0, xrMirrorFlatUi.bindGroup, 0, nullptr);
+            pass.Draw(3);
+          }
+        } else if (useXrSbsMirror) {
           const float surfaceWidth = static_cast<float>(webgpu::g_graphicsConfig.surfaceConfiguration.width);
           const float halfWidth = surfaceWidth * 0.5f;
           for (size_t i = 0; i < sbsMirrorEyes.size(); ++i) {
@@ -380,7 +488,9 @@ void end_frame() noexcept {
       }
     } else {
       Log.info("Skipping present; window not presentable");
-      webgpu::release_surface();
+      if (!xr::is_active() && !xr::should_render()) {
+        webgpu::release_surface();
+      }
     }
     const wgpu::CommandBufferDescriptor cmdBufDescriptor{.label = "Redraw command buffer"};
     const auto buffer = encoder.Finish(&cmdBufDescriptor);
@@ -441,3 +551,4 @@ void aurora_set_background_input(bool value) {
   aurora::g_config.allowJoystickBackgroundEvents = value;
   aurora::window::set_background_input(value);
 }
+void aurora_debug_set_surface_ready(bool ready) { aurora::window::set_surface_ready(ready); }

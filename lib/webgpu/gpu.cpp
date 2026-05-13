@@ -42,6 +42,7 @@ TextureWithSampler g_depthBuffer;
 // EFB -> XFB copy pipeline
 static wgpu::BindGroupLayout g_CopyBindGroupLayout;
 wgpu::RenderPipeline g_CopyPipeline;
+wgpu::RenderPipeline g_AlphaBlendCopyPipeline;
 wgpu::BindGroup g_CopyBindGroup;
 
 static wgpu::Adapter g_adapter;
@@ -269,6 +270,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(efb_texture, efb_sampler, in.uv);
     return vec4(color.rgb, 1.0);
 }
+
+@fragment
+fn fs_alpha_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(efb_texture, efb_sampler, in.uv);
+}
 )""";
   const wgpu::ShaderModuleDescriptor moduleDescriptor{
       .nextInChain = &sourceDescriptor,
@@ -333,6 +339,35 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
       .fragment = &fragmentState,
   };
   g_CopyPipeline = g_device.CreateRenderPipeline(&pipelineDescriptor);
+
+  wgpu::BlendState alphaBlendState{
+      .color =
+          wgpu::BlendComponent{
+              .operation = wgpu::BlendOperation::Add,
+              .srcFactor = wgpu::BlendFactor::SrcAlpha,
+              .dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha,
+          },
+      .alpha =
+          wgpu::BlendComponent{
+              .operation = wgpu::BlendOperation::Add,
+              .srcFactor = wgpu::BlendFactor::One,
+              .dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha,
+          },
+  };
+  const std::array alphaBlendTargets{wgpu::ColorTargetState{
+      .format = g_graphicsConfig.surfaceConfiguration.format,
+      .blend = &alphaBlendState,
+      .writeMask = wgpu::ColorWriteMask::All,
+  }};
+  const wgpu::FragmentState alphaBlendFragmentState{
+      .module = module,
+      .entryPoint = "fs_alpha_main",
+      .targetCount = alphaBlendTargets.size(),
+      .targets = alphaBlendTargets.data(),
+  };
+  wgpu::RenderPipelineDescriptor alphaBlendPipelineDescriptor = pipelineDescriptor;
+  alphaBlendPipelineDescriptor.fragment = &alphaBlendFragmentState;
+  g_AlphaBlendCopyPipeline = g_device.CreateRenderPipeline(&alphaBlendPipelineDescriptor);
 }
 
 wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source) {
@@ -649,6 +684,7 @@ bool initialize(AuroraBackend auroraBackend) {
 void shutdown() {
   g_CopyBindGroupLayout = {};
   g_CopyPipeline = {};
+  g_AlphaBlendCopyPipeline = {};
   g_CopyBindGroup = {};
   g_frameBuffer = {};
   g_frameBufferResolved = {};

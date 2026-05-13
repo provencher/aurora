@@ -23,6 +23,7 @@ static float g_scale;
 static std::string g_imguiSettings{};
 static std::string g_imguiLog{};
 static bool g_useSdlRenderer = false;
+static int g_lastRenderedFrame = -1;
 
 static std::vector<SDL_Texture*> g_sdlTextures;
 static std::vector<wgpu::Texture> g_wgpuTextures;
@@ -132,7 +133,10 @@ void new_frame(const AuroraWindowSize& size) noexcept {
 
 void render(const wgpu::RenderPassEncoder& pass) noexcept {
   ZoneScoped;
-  ImGui::Render();
+  if (g_lastRenderedFrame != ImGui::GetFrameCount()) {
+    ImGui::Render();
+    g_lastRenderedFrame = ImGui::GetFrameCount();
+  }
 
   auto* data = ImGui::GetDrawData();
   data->FramebufferScale = ImGui::GetIO().DisplayFramebufferScale;

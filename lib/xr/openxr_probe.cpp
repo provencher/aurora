@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -27,6 +28,16 @@ namespace aurora::xr {
 namespace {
 constexpr const char* VulkanEnable2Extension = "XR_KHR_vulkan_enable2";
 constexpr XrVersion RequestedOpenXRApiVersion = XR_MAKE_VERSION(1, 0, 0);
+
+void trace_probe(const char* message) noexcept {
+  const char* enabled = std::getenv("AURORA_XR_PROBE_TRACE");
+  if (enabled != nullptr && enabled[0] != '\0' && enabled[0] != '0') {
+    std::fprintf(stderr, "[aurora::xr::probe] %s\n", message);
+    std::fflush(stderr);
+  }
+}
+
+void trace_probe(const std::string& message) noexcept { trace_probe(message.c_str()); }
 
 const char* xr_result_name(XrResult result) noexcept {
   switch (result) {
@@ -448,6 +459,7 @@ bool clear_openxr_swapchain_image(const dawn::native::vulkan::VulkanDeviceHandle
 
 DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, XrSystemId systemId,
                                                          const std::vector<XrViewConfigurationView>& xrViews) {
+  trace_probe("querying Dawn Vulkan handles");
   dawn::native::vulkan::VulkanDeviceHandles handles{};
   if (!webgpu::get_dawn_vulkan_handles(&handles)) {
     return {.message = "patched Dawn Vulkan handle query failed"};
@@ -458,21 +470,25 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
 
   VulkanClearFns vkFns{};
   std::string detail;
+  trace_probe("loading Vulkan clear functions");
   if (!load_vulkan_clear_fns(handles, vkFns, detail)) {
     return {.message = detail};
   }
 
   PFN_xrVoidFunction proc = nullptr;
+  trace_probe("loading xrGetVulkanGraphicsRequirements2KHR");
   if (!load_xr_proc(instance, "xrGetVulkanGraphicsRequirements2KHR", &proc, detail)) {
     return {.message = detail};
   }
   const auto getRequirements = reinterpret_cast<PFN_xrGetVulkanGraphicsRequirements2KHR>(proc);
   XrGraphicsRequirementsVulkanKHR requirements{XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR};
+  trace_probe("querying Vulkan graphics requirements");
   XrResult xrResult = getRequirements(instance, systemId, &requirements);
   if (XR_FAILED(xrResult)) {
     return {.message = "xrGetVulkanGraphicsRequirements2KHR failed: " + result_string(xrResult)};
   }
 
+  trace_probe("loading xrGetVulkanGraphicsDevice2KHR");
   if (!load_xr_proc(instance, "xrGetVulkanGraphicsDevice2KHR", &proc, detail)) {
     return {.message = detail};
   }
@@ -481,6 +497,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
   deviceGetInfo.systemId = systemId;
   deviceGetInfo.vulkanInstance = handles.instance;
   VkPhysicalDevice runtimePhysicalDevice = VK_NULL_HANDLE;
+  trace_probe("querying runtime Vulkan physical device");
   xrResult = getGraphicsDevice(instance, &deviceGetInfo, &runtimePhysicalDevice);
   if (XR_FAILED(xrResult)) {
     return {.message = "xrGetVulkanGraphicsDevice2KHR failed for Dawn's Vulkan instance: " +
@@ -498,22 +515,59 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
                        std::string{dawnProperties.deviceName} + ")"};
   }
 
-  VkPhysicalDeviceProperties physicalDeviceProperties{};
-  vkFns.getPhysicalDeviceProperties(handles.physicalDevice, &physicalDeviceProperties);
   const XrVersion dawnVulkanVersion =
-      XR_MAKE_VERSION(VK_API_VERSION_MAJOR(physicalDeviceProperties.apiVersion),
-                      VK_API_VERSION_MINOR(physicalDeviceProperties.apiVersion),
-                      VK_API_VERSION_PATCH(physicalDeviceProperties.apiVersion));
+      XR_MAKE_VERSION(VK_API_VERSION_MAJOR(handles.apiVersion), VK_API_VERSION_MINOR(handles.apiVersion),
+                      VK_API_VERSION_PATCH(handles.apiVersion));
   if (dawnVulkanVersion < requirements.minApiVersionSupported) {
     return {.message = "Dawn Vulkan device API version " + xr_version_string(dawnVulkanVersion) +
                        " is below the OpenXR runtime minimum " +
                        xr_version_string(requirements.minApiVersionSupported)};
   }
+  trace_probe("Dawn Vulkan device API version " + xr_version_string(dawnVulkanVersion) +
+              "; runtime Vulkan API range " + xr_version_string(requirements.minApiVersionSupported) + " - " +
+              xr_version_string(requirements.maxApiVersionSupported));
   if (requirements.maxApiVersionSupported != 0 && dawnVulkanVersion > requirements.maxApiVersionSupported) {
     return {.message = "Dawn Vulkan device API version " + xr_version_string(dawnVulkanVersion) +
                        " is above the OpenXR runtime maximum " +
-                       xr_version_string(requirements.maxApiVersionSupported)};
+                       xr_version_string(requirements.maxApiVersionSupported) +
+                       "; this runtime likely needs Dawn to create an OpenXR-compatible Vulkan device/API version "
+                       "or use runtime-mediated Vulkan device creation"};
   }
+
+  auto traceRuntimeExtensionString = [&](const char* procName) {
+    PFN_xrVoidFunction extensionProc = nullptr;
+    std::string extensionDetail;
+    if (!load_xr_proc(instance, procName, &extensionProc, extensionDetail)) {
+      trace_probe(std::string{"could not load "} + procName + ": " + extensionDetail);
+      return;
+    }
+    uint32_t byteCount = 0;
+    XrResult extensionResult = XR_ERROR_FUNCTION_UNSUPPORTED;
+    if (std::strcmp(procName, "xrGetVulkanInstanceExtensionsKHR") == 0) {
+      const auto getExtensions = reinterpret_cast<PFN_xrGetVulkanInstanceExtensionsKHR>(extensionProc);
+      extensionResult = getExtensions(instance, systemId, 0, &byteCount, nullptr);
+      if (XR_SUCCEEDED(extensionResult) && byteCount != 0) {
+        std::string extensions(byteCount, '\0');
+        extensionResult = getExtensions(instance, systemId, byteCount, &byteCount, extensions.data());
+        extensions.resize(byteCount != 0 && extensions[byteCount - 1] == '\0' ? byteCount - 1 : byteCount);
+        trace_probe(std::string{procName} + ": " + extensions);
+      }
+    } else {
+      const auto getExtensions = reinterpret_cast<PFN_xrGetVulkanDeviceExtensionsKHR>(extensionProc);
+      extensionResult = getExtensions(instance, systemId, 0, &byteCount, nullptr);
+      if (XR_SUCCEEDED(extensionResult) && byteCount != 0) {
+        std::string extensions(byteCount, '\0');
+        extensionResult = getExtensions(instance, systemId, byteCount, &byteCount, extensions.data());
+        extensions.resize(byteCount != 0 && extensions[byteCount - 1] == '\0' ? byteCount - 1 : byteCount);
+        trace_probe(std::string{procName} + ": " + extensions);
+      }
+    }
+    if (XR_FAILED(extensionResult)) {
+      trace_probe(std::string{procName} + " failed: " + result_string(extensionResult));
+    }
+  };
+  traceRuntimeExtensionString("xrGetVulkanInstanceExtensionsKHR");
+  traceRuntimeExtensionString("xrGetVulkanDeviceExtensionsKHR");
 
   XrGraphicsBindingVulkanKHR binding{XR_TYPE_GRAPHICS_BINDING_VULKAN_KHR};
   binding.instance = handles.instance;
@@ -527,6 +581,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
   sessionCreateInfo.systemId = systemId;
 
   XrSession session = XR_NULL_HANDLE;
+  trace_probe("creating OpenXR Vulkan session");
   xrResult = xrCreateSession(instance, &sessionCreateInfo, &session);
   if (XR_FAILED(xrResult)) {
     return {.message = "xrCreateSession with Dawn's Vulkan device failed: " + result_string(xrResult)};
@@ -540,6 +595,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
   };
 
   uint32_t formatCount = 0;
+  trace_probe("enumerating swapchain formats");
   xrResult = xrEnumerateSwapchainFormats(session, 0, &formatCount, nullptr);
   if (XR_FAILED(xrResult) || formatCount == 0) {
     destroySession();
@@ -578,6 +634,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
   }
 
   for (uint32_t eye = 0; eye < eyeCount; ++eye) {
+    trace_probe("creating proof eye swapchain");
     if (xrViews[eye].recommendedImageRectWidth == 0 || xrViews[eye].recommendedImageRectHeight == 0 ||
         xrViews[eye].maxSwapchainSampleCount < ProofSwapchainSampleCount) {
       destroySession();
@@ -617,6 +674,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
     };
 
     uint32_t imageCount = 0;
+    trace_probe("enumerating proof swapchain image count");
     xrResult = xrEnumerateSwapchainImages(swapchain, 0, &imageCount, nullptr);
     if (XR_FAILED(xrResult) || imageCount == 0) {
       destroySwapchain();
@@ -625,6 +683,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
                          result_string(xrResult)};
     }
     std::vector<XrSwapchainImageVulkanKHR> images(imageCount, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR});
+    trace_probe("reading proof swapchain images");
     xrResult = xrEnumerateSwapchainImages(swapchain, imageCount, &imageCount,
                                           reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
     if (XR_FAILED(xrResult)) {
@@ -636,6 +695,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
 
     uint32_t imageIndex = 0;
     XrSwapchainImageAcquireInfo acquireInfo{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    trace_probe("acquiring proof swapchain image");
     xrResult = xrAcquireSwapchainImage(swapchain, &acquireInfo, &imageIndex);
     if (XR_FAILED(xrResult) || imageIndex >= images.size()) {
       destroySwapchain();
@@ -646,6 +706,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
 
     XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     waitInfo.timeout = XR_INFINITE_DURATION;
+    trace_probe("waiting proof swapchain image");
     xrResult = xrWaitSwapchainImage(swapchain, &waitInfo);
     if (XR_FAILED(xrResult)) {
       XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -656,6 +717,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
                          result_string(xrResult)};
     }
 
+    trace_probe("clearing proof swapchain image");
     if (!clear_openxr_swapchain_image(handles, vkFns, images[imageIndex].image, detail)) {
       XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
       xrReleaseSwapchainImage(swapchain, &releaseInfo);
@@ -686,6 +748,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
         .mipLevelCount = 1,
         .sampleCount = swapchainCreateInfo.sampleCount,
     };
+    trace_probe("wrapping proof swapchain image as Dawn texture");
     if (webgpu::wrap_dawn_vulkan_swapchain_image(images[imageIndex].image, wrapperDescriptor) == nullptr) {
       XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
       xrReleaseSwapchainImage(swapchain, &releaseInfo);
@@ -699,6 +762,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
     }
 
     XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    trace_probe("releasing proof swapchain image");
     xrResult = xrReleaseSwapchainImage(swapchain, &releaseInfo);
     destroySwapchain();
     if (XR_FAILED(xrResult)) {
@@ -708,6 +772,7 @@ DawnOpenXRProofResult run_dawn_openxr_vulkan_clear_proof(XrInstance instance, Xr
     }
   }
 
+  trace_probe("destroying proof OpenXR session");
   destroySession();
   return {.succeeded = true,
           .message =

@@ -2,10 +2,40 @@ diff --git a/include/dawn/native/VulkanBackend.h b/include/dawn/native/VulkanBac
 index 201bc3242..7a38dc4b5 100644
 --- a/include/dawn/native/VulkanBackend.h
 +++ b/include/dawn/native/VulkanBackend.h
-@@ -41,6 +41,29 @@ DAWN_NATIVE_EXPORT VkInstance GetInstance(WGPUDevice device);
+@@ -41,6 +41,60 @@ DAWN_NATIVE_EXPORT VkInstance GetInstance(WGPUDevice device);
  
  DAWN_NATIVE_EXPORT PFN_vkVoidFunction GetInstanceProcAddr(WGPUDevice device, const char* pName);
  
++using VulkanOpenXRCreateInstanceCallback = ::VkResult (*)(
++    void* userdata,
++    PFN_vkGetInstanceProcAddr pfnGetInstanceProcAddr,
++    const VkInstanceCreateInfo* createInfo,
++    const VkAllocationCallbacks* allocator,
++    VkInstance* instance);
++
++using VulkanOpenXRCreateDeviceCallback = ::VkResult (*)(
++    void* userdata,
++    PFN_vkGetInstanceProcAddr pfnGetInstanceProcAddr,
++    VkInstance instance,
++    VkPhysicalDevice physicalDevice,
++    const VkDeviceCreateInfo* createInfo,
++    const VkAllocationCallbacks* allocator,
++    VkDevice* device);
++
++struct DAWN_NATIVE_EXPORT VulkanOpenXRHooks {
++    void* userdata = nullptr;
++    VulkanOpenXRCreateInstanceCallback createInstance = nullptr;
++    VulkanOpenXRCreateDeviceCallback createDevice = nullptr;
++};
++
++// Dusk OpenXR integration hook. When installed before the Vulkan backend is initialized,
++// Dawn asks the active OpenXR runtime to mediate Vulkan instance/device creation.
++DAWN_NATIVE_EXPORT void SetOpenXRHooks(const VulkanOpenXRHooks* hooks);
++DAWN_NATIVE_EXPORT void ClearOpenXRHooks();
++DAWN_NATIVE_EXPORT const VulkanOpenXRHooks& GetOpenXRHooks();
++DAWN_NATIVE_EXPORT void SetOpenXRDeviceCreateCallback(void* userdata, VulkanOpenXRCreateDeviceCallback callback);
++DAWN_NATIVE_EXPORT VulkanOpenXRCreateDeviceCallback GetOpenXRDeviceCreateCallback(void** userdata);
++
 +struct DAWN_NATIVE_EXPORT VulkanDeviceHandles {
 +    VkInstance instance = VK_NULL_HANDLE;
 +    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -13,6 +43,7 @@ index 201bc3242..7a38dc4b5 100644
 +    VkQueue queue = VK_NULL_HANDLE;
 +    uint32_t queueFamilyIndex = 0;
 +    uint32_t queueIndex = 0;
++    uint32_t apiVersion = VK_API_VERSION_1_1;
 +};
 +
 +// Dusk OpenXR integration hook. Returns false if the device is not a Vulkan Dawn device.
@@ -47,6 +78,52 @@ index c34bd5769..a0e439848 100644
  
      VkApplicationInfo appInfo;
      appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+@@ -514,9 +518,17 @@ ResultOrError<VulkanGlobalKnobs> VulkanInstance::CreateVkInstance(const Instance
+         createInfoChain.Add(&validationFeatures, VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT);
+     }
+ 
+-    DAWN_TRY(CheckVkSuccess(mFunctions.CreateInstance(&createInfo, nullptr, &mInstance),
+-                            "vkCreateInstance"));
++    const VulkanOpenXRHooks& openXRHooks = GetOpenXRHooks();
++    if (openXRHooks.createInstance != nullptr) {
++        DAWN_TRY(CheckVkSuccess(openXRHooks.createInstance(openXRHooks.userdata,
++                                                           mFunctions.GetInstanceProcAddr, &createInfo, nullptr,
++                                                           &mInstance),
++                                "xrCreateVulkanInstanceKHR"));
++    } else {
++        DAWN_TRY(CheckVkSuccess(mFunctions.CreateInstance(&createInfo, nullptr, &mInstance),
++                                "vkCreateInstance"));
++    }
+     DAWN_INVALID_IF(mInstance == VK_NULL_HANDLE, "Failed to create VkInstance");
+ 
+     return usedKnobs;
+ }
+diff --git a/src/dawn/native/vulkan/DeviceVk.cpp b/src/dawn/native/vulkan/DeviceVk.cpp
+index f416272df..68d6f7669 100644
+--- a/src/dawn/native/vulkan/DeviceVk.cpp
++++ b/src/dawn/native/vulkan/DeviceVk.cpp
+@@ -727,8 +727,18 @@ ResultOrError<VulkanDeviceKnobs> Device::CreateDevice(VkPhysicalDevice vkPhysic
+     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensionNames.size());
+     createInfo.ppEnabledExtensionNames = extensionNames.data();
+     createInfo.pEnabledFeatures = nullptr;
+ 
+-    DAWN_TRY(CheckVkSuccess(fn.CreateDevice(vkPhysicalDevice, &createInfo, nullptr, &mVkDevice),
+-                            "vkCreateDevice"));
++    void* openXRDeviceCreateUserdata = nullptr;
++    VulkanOpenXRCreateDeviceCallback openXRDeviceCreateCallback =
++        GetOpenXRDeviceCreateCallback(&openXRDeviceCreateUserdata);
++    if (openXRDeviceCreateCallback != nullptr) {
++        DAWN_TRY(CheckVkSuccess(openXRDeviceCreateCallback(openXRDeviceCreateUserdata,
++                                                           fn.GetInstanceProcAddr, GetVkInstance(), vkPhysicalDevice,
++                                                           &createInfo, nullptr, &mVkDevice),
++                                "xrCreateVulkanDeviceKHR"));
++    } else {
++        DAWN_TRY(CheckVkSuccess(fn.CreateDevice(vkPhysicalDevice, &createInfo, nullptr, &mVkDevice),
++                                "vkCreateDevice"));
++    }
+ 
+     return usedKnobs;
+ }
 diff --git a/src/dawn/native/vulkan/VulkanBackend.cpp b/src/dawn/native/vulkan/VulkanBackend.cpp
 index a06c4f393..6611d483f 100644
 --- a/src/dawn/native/vulkan/VulkanBackend.cpp
@@ -67,7 +144,49 @@ index a06c4f393..6611d483f 100644
  #include "dawn/native/vulkan/TextureVk.h"
  
  namespace dawn::native::vulkan {
-@@ -54,6 +58,65 @@ DAWN_NATIVE_EXPORT PFN_vkVoidFunction GetInstanceProcAddr(WGPUDevice device, con
+@@ -42,7 +46,41 @@ namespace dawn::native::vulkan {
+ 
++namespace {
++VulkanOpenXRHooks gOpenXRHooks{};
++void* gOpenXRDeviceCreateUserdata = nullptr;
++VulkanOpenXRCreateDeviceCallback gOpenXRDeviceCreateCallback = nullptr;
++}
++
++void SetOpenXRHooks(const VulkanOpenXRHooks* hooks) {
++    if (hooks == nullptr) {
++        gOpenXRHooks = {};
++        return;
++    }
++    gOpenXRHooks = *hooks;
++}
++
++void ClearOpenXRHooks() {
++    gOpenXRHooks = {};
++}
++
+ VkInstance GetInstance(WGPUDevice device) {
+     Device* backendDevice = ToBackend(FromAPI(device));
+     return backendDevice->GetVkInstance();
+ }
++
++const VulkanOpenXRHooks& GetOpenXRHooks() {
++    return gOpenXRHooks;
++}
++
++void SetOpenXRDeviceCreateCallback(void* userdata, VulkanOpenXRCreateDeviceCallback callback) {
++    gOpenXRDeviceCreateUserdata = userdata;
++    gOpenXRDeviceCreateCallback = callback;
++}
++
++VulkanOpenXRCreateDeviceCallback GetOpenXRDeviceCreateCallback(void** userdata) {
++    if (userdata != nullptr) {
++        *userdata = gOpenXRDeviceCreateUserdata;
++    }
++    return gOpenXRDeviceCreateCallback;
++}
+ 
+ VkDevice GetVkDevice(WGPUDevice device) {
+@@ -54,6 +94,66 @@ DAWN_NATIVE_EXPORT PFN_vkVoidFunction GetInstanceProcAddr(WGPUDevice device, con
      return (*backendDevice->fn.GetInstanceProcAddr)(backendDevice->GetVkInstance(), pName);
  }
  
@@ -90,6 +209,7 @@ index a06c4f393..6611d483f 100644
 +    outHandles->queue = backendQueue->GetVkQueue();
 +    outHandles->queueFamilyIndex = backendDevice->GetGraphicsQueueFamily();
 +    outHandles->queueIndex = 0;
++    outHandles->apiVersion = VK_API_VERSION_1_1;
 +    return outHandles->instance != VK_NULL_HANDLE && outHandles->physicalDevice != VK_NULL_HANDLE &&
 +           outHandles->device != VK_NULL_HANDLE && outHandles->queue != VK_NULL_HANDLE &&
 +           outHandles->queueFamilyIndex != std::numeric_limits<uint32_t>::max();

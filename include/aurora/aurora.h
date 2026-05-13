@@ -140,6 +140,16 @@ typedef enum {
   AURORA_XR_LOST,
 } AuroraXRStatus;
 
+typedef enum {
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_UNKNOWN,
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_NOT_QUERIED,
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_VALIDATED,
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_MISSING_INSTANCE,
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_MISSING_DEVICE,
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_INSTANCE_QUERY_UNAVAILABLE,
+  AURORA_XR_VULKAN_EXTENSION_VALIDATION_DEVICE_QUERY_UNAVAILABLE,
+} AuroraXRVulkanExtensionValidation;
+
 typedef struct {
   float x;
   float y;
@@ -209,6 +219,7 @@ const AuroraBackend* aurora_get_available_backends(size_t* count);
 
 AuroraXRStatus aurora_xr_get_status();
 const char* aurora_xr_get_status_message();
+AuroraXRVulkanExtensionValidation aurora_xr_get_vulkan_extension_validation();
 bool aurora_xr_is_requested();
 bool aurora_xr_is_active();
 bool aurora_xr_should_render();
@@ -219,6 +230,12 @@ bool aurora_xr_begin_eye(uint32_t eyeIndex);
 void aurora_xr_end_eye();
 bool aurora_xr_begin_flat_ui();
 void aurora_xr_end_flat_ui();
+
+/*
+ * Debug/test hook for simulating a temporarily unavailable native presentation
+ * surface. Normal applications should not call this.
+ */
+void aurora_debug_set_surface_ready(bool ready);
 
 #ifdef __cplusplus
 }

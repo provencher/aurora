@@ -226,13 +226,13 @@ void process_event(SDL_Event& event) {
 }
 } // namespace
 
-const AuroraEvent* poll_events() {
+const AuroraEvent* poll_events(bool waitWhenPaused) {
   g_events.clear();
 
   SDL_Event event;
   // Clear out the previous scroll values to prevent ghost input
   input::set_mouse_scroll(0, 0);
-  if (is_paused()) {
+  if (waitWhenPaused && is_paused()) {
     if (SDL_WaitEvent(&event)) {
       process_event(event);
     } else {

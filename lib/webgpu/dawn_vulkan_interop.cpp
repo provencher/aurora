@@ -39,6 +39,21 @@ wgpu::Texture wrap_dawn_vulkan_swapchain_image(VkImage image,
   };
   return wgpu::Texture::Acquire(dawn::native::vulkan::WrapVulkanSwapchainImage(g_device.Get(), &descriptor));
 }
+
+void set_openxr_vulkan_hooks(const dawn::native::vulkan::VulkanOpenXRHooks* hooks) noexcept {
+  dawn::native::vulkan::SetOpenXRHooks(hooks);
+}
+
+void clear_openxr_vulkan_hooks() noexcept {
+  dawn::native::vulkan::ClearOpenXRHooks();
+  dawn::native::vulkan::SetOpenXRDeviceCreateCallback(nullptr, nullptr);
+}
+
+void set_openxr_vulkan_device_create_callback(
+    void* userdata,
+    dawn::native::vulkan::VulkanOpenXRCreateDeviceCallback callback) noexcept {
+  dawn::native::vulkan::SetOpenXRDeviceCreateCallback(userdata, callback);
+}
 #endif
 
 DawnVulkanInteropStatus probe_dawn_vulkan_interop() noexcept {
