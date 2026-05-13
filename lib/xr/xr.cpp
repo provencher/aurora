@@ -1238,8 +1238,8 @@ void prepare_dawn_openxr_vulkan_hooks(const AuroraConfig& config, AuroraBackend 
 void clear_dawn_openxr_vulkan_hooks() noexcept {
 #if defined(AURORA_ENABLE_GX) && defined(AURORA_DAWN_OPENXR_HANDLES)
   webgpu::clear_openxr_vulkan_hooks();
-#endif
   g_runtime.dawnOpenXRHooksInstalled = false;
+#endif
 }
 
 void initialize(const AuroraConfig& config, AuroraBackend selectedBackend) noexcept {
