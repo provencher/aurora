@@ -241,6 +241,19 @@ wgpu::TextureFormat wgpu_format_from_vk_format(int64_t vkFormat) noexcept {
   }
 }
 
+wgpu::TextureFormat wgpu_format_from_vk_format_unorm(int64_t vkFormat) noexcept {
+  switch (vkFormat) {
+  case VK_FORMAT_B8G8R8A8_UNORM:
+  case VK_FORMAT_B8G8R8A8_SRGB:
+    return wgpu::TextureFormat::BGRA8Unorm;
+  case VK_FORMAT_R8G8B8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+    return wgpu::TextureFormat::RGBA8Unorm;
+  default:
+    return wgpu::TextureFormat::Undefined;
+  }
+}
+
 bool load_xr_proc(XrInstance instance, const char* name, PFN_xrVoidFunction* outProc, std::string& message) {
   *outProc = nullptr;
   const XrResult result = xrGetInstanceProcAddr(instance, name, outProc);
@@ -877,7 +890,7 @@ bool initialize_runtime(std::string& message, std::vector<AuroraXRView>& views) 
       break;
     }
   }
-  const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format(g_runtime.colorFormat);
+  const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format_unorm(g_runtime.colorFormat);
   if (wgpuFormat == wgpu::TextureFormat::Undefined) {
     if (std::getenv("AURORA_XR_BOOTSTRAP_TRACE") != nullptr) {
       for (uint32_t i = 0; i < formatCount; ++i) {
@@ -1478,7 +1491,7 @@ bool acquire_flat_ui_target(bool installEfbTargets) noexcept {
     }
 
     FlatUiSwapchainImage& image = flatUi.images[flatUi.acquiredImageIndex];
-    const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format(g_runtime.colorFormat);
+    const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format_unorm(g_runtime.colorFormat);
     const wgpu::TextureDescriptor wrapperDescriptor{
         .label = "OpenXR flat UI swapchain image",
         .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
@@ -1611,7 +1624,7 @@ bool begin_eye(uint32_t eyeIndex) noexcept {
   }
 
   EyeSwapchainImage& image = eye.images[eye.acquiredImageIndex];
-  const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format(g_runtime.colorFormat);
+  const wgpu::TextureFormat wgpuFormat = wgpu_format_from_vk_format_unorm(g_runtime.colorFormat);
   const wgpu::TextureDescriptor wrapperDescriptor{
       .label = "OpenXR swapchain image",
       .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc |
